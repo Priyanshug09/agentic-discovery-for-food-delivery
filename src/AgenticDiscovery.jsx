@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect } from "react";
-
+ 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-const ANTHROPIC_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY;
-
+ 
+// ─────────────────────────────────────────────
+// DATASET
+// ─────────────────────────────────────────────
 const RESTAURANTS = [
   { id:1,  emoji:"🥗", name:"Green Bowl",     cuisine:"Healthy",       rating:4.8, deliveryTime:15, avgPrice:11, vegetarian:true,  vegan:true,  spicy:false, tags:["healthy","salad","vegan","vegetarian","light","clean","bowl"],         topItem:{name:"Quinoa Power Bowl",     protein:22,price:13.50}},
   { id:2,  emoji:"💪", name:"Protein Palace", cuisine:"Fitness",       rating:4.5, deliveryTime:22, avgPrice:16, vegetarian:false, vegan:false, spicy:false, tags:["high protein","gym","grilled","chicken","beef","fitness","macro"],     topItem:{name:"Double Chicken Burger", protein:58,price:14.90}},
@@ -21,26 +22,26 @@ const RESTAURANTS = [
   { id:14, emoji:"🍲", name:"Soup & Soul",    cuisine:"European",      rating:4.3, deliveryTime:19, avgPrice:9,  vegetarian:true,  vegan:false, spicy:false, tags:["comfort","soup","warm","healthy","light","vegetarian"],               topItem:{name:"Tomato Basil Soup",     protein: 8,price: 9.50}},
   { id:15, emoji:"🌮", name:"Taco Fiesta",    cuisine:"Mexican",       rating:4.2, deliveryTime:18, avgPrice:10, vegetarian:true,  vegan:false, spicy:true,  tags:["mexican","spicy","tacos","cheap","budget","quick","vegetarian"],      topItem:{name:"Spicy Black Bean Tacos",protein:15,price:10.50}},
 ];
-
+ 
+// ─────────────────────────────────────────────
+// REAL CLAUDE API — INTENT PARSER
+// One call: extracts constraints + generates
+// human reaction + intro text
+// ─────────────────────────────────────────────
 async function callClaudeParser(query) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-4-20250514",
       max_tokens: 600,
       system: `You are a food discovery assistant for a delivery platform.
 Extract intent from the user's message and generate human conversation text.
-
+ 
 Return ONLY a valid JSON object. No markdown. No backticks. No explanation.
-
+ 
 {
-  "intents": [{"label": "short label e.g. Budget <= €12", "icon": "single emoji"}],
+  "intents": [{"label": "short label e.g. Budget ≤ €12", "icon": "single emoji"}],
   "constraints": {
     "maxPrice": null,
     "maxTime": null,
@@ -56,20 +57,21 @@ Return ONLY a valid JSON object. No markdown. No backticks. No explanation.
   "reaction": "1 casual warm sentence reacting to what they said. Like a friend. 1 emoji max.",
   "intro": "1 natural sentence introducing the restaurant results. No jargon. Keep it conversational."
 }
-
+ 
 Icon guide: 💰 budget, ⏱️ speed, 🌱 vegan, 🥗 vegetarian, 💪 protein/gym, 🥦 healthy, 🌶️ spicy, 🍲 comfort, 👨‍👩‍👧‍👦 family, 🌙 late night
 maxPrice and maxTime must be numbers or null. All booleans must be true or false.`,
       messages: [{ role: "user", content: query }]
     })
   });
-
+ 
   const data = await res.json();
   const raw  = data.content?.[0]?.text || "{}";
   const clean = raw.replace(/```json|```/g, "").trim();
-
+ 
   try {
     return JSON.parse(clean);
   } catch {
+    // Fallback if JSON parse fails
     return {
       intents: [],
       constraints: { maxPrice:null,maxTime:null,vegan:false,vegetarian:false,spicy:false,highProtein:false,healthy:false,comfort:false,family:false,lateNight:false },
@@ -78,24 +80,23 @@ maxPrice and maxTime must be numbers or null. All booleans must be true or false
     };
   }
 }
-
+ 
+// ─────────────────────────────────────────────
+// REAL CLAUDE API — PERSONALISED CLOSING
+// Small targeted call after we know the winner
+// ─────────────────────────────────────────────
 async function callClaudeClosing(winner, constraints, query) {
   if (!winner) return "Let me know if you'd like other options 😊";
-
+ 
   const cList = Object.entries(constraints)
     .filter(([,v]) => v !== null && v !== false)
     .map(([k,v]) => `${k}=${v}`).join(", ") || "general";
-
+ 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-4-20250514",
       max_tokens: 120,
       system: `Write a casual 1-2 sentence personal closing recommendation. Sound like a knowledgeable friend. Be specific about WHY this restaurant fits. 1 emoji max. Return ONLY the message text — no quotes, no preamble.`,
       messages: [{
@@ -104,17 +105,20 @@ async function callClaudeClosing(winner, constraints, query) {
       }]
     })
   });
-
+ 
   const data = await res.json();
   return data.content?.[0]?.text?.trim()
     || `${winner.name} is my top pick here — rated ${winner.rating}/5 for a reason.`;
 }
-
+ 
+// ─────────────────────────────────────────────
+// LOCAL SCORER — deterministic, fast, auditable
+// ─────────────────────────────────────────────
 function scoreRestaurant(r, c) {
   let score = r.rating * 14, constraintsMet = 0;
   const total = Object.keys(c).filter(k => c[k] !== null && c[k] !== false).length || 1;
   const reasons = [];
-
+ 
   if (c.maxPrice  != null) { if (r.avgPrice<=c.maxPrice)        {score+=35;constraintsMet++;reasons.push(`€${r.avgPrice} avg`);}       else score-=45;}
   if (c.maxTime   != null) { if (r.deliveryTime<=c.maxTime)     {score+=30;constraintsMet++;reasons.push(`${r.deliveryTime} min`);}      else score-=40;}
   if (c.vegan)             { if (r.vegan)                        {score+=50;constraintsMet++;reasons.push("fully vegan");}               else score-=65;}
@@ -125,10 +129,13 @@ function scoreRestaurant(r, c) {
   if (c.comfort   && r.tags.includes("comfort"))    {score+=25;constraintsMet++;reasons.push("great comfort food");}
   if (c.family    && r.tags.includes("family"))     {score+=35;constraintsMet++;reasons.push("great for groups");}
   if (c.lateNight && r.tags.includes("late night")) {score+=40;constraintsMet++;reasons.push("open late");}
-
+ 
   return {score, constraintsMet, totalConstraints:total, reasons};
 }
-
+ 
+// ─────────────────────────────────────────────
+// EVAL METRICS
+// ─────────────────────────────────────────────
 function calcMetrics(intents, constraints, topResult) {
   const totalC = Object.keys(constraints).filter(k => constraints[k] !== null && constraints[k] !== false).length || 1;
   const {constraintsMet} = topResult ? scoreRestaurant(topResult, constraints) : {constraintsMet:0};
@@ -139,30 +146,61 @@ function calcMetrics(intents, constraints, topResult) {
   const overall     = Math.round(intentMatch*0.35 + conSat*0.40 + ground*0.25);
   return {intentMatch:Math.round(intentMatch), conSat, ground, halluc, overall};
 }
-
+ 
+// ─────────────────────────────────────────────
+// NATURAL CARD DESCRIPTION — unique per restaurant
+// ─────────────────────────────────────────────
+const SPICY_LINES = [
+  (r) => `${r.name} is known for real heat — not the mild stuff. Rated ${r.rating}/5.`,
+  (r) => `One of the spicier kitchens around — ${r.cuisine} done properly. ${r.rating}/5.`,
+  (r) => `Brings genuine heat — regulars rate it ${r.rating}/5 for a reason.`,
+  (r) => `${r.deliveryTime} min delivery and they don't go easy on the spice. ${r.rating}/5.`,
+];
+const PROTEIN_LINES = [
+  (r) => `${r.topItem.protein}g protein in the top dish — one of the highest nearby. Rated ${r.rating}/5.`,
+  (r) => `Serious protein numbers: ${r.topItem.protein}g in the main. ${r.rating}/5 rated.`,
+  (r) => `Built for post-workout — ${r.topItem.protein}g protein and ${r.deliveryTime} min delivery.`,
+];
+ 
 function buildCardDesc(r, reasons) {
-  if (!reasons.length) return `Rated ${r.rating}/5 — consistently one of the better spots nearby.`;
+  if (!reasons.length) return `Rated ${r.rating}/5 — one of the better spots nearby. Delivers in ${r.deliveryTime} min.`;
+ 
   const h = s => {
-    if (s.includes("€") && s.includes("avg")) return "fits your budget";
-    if (s.includes("min"))   return `arrives in ${s}`;
-    if (s==="fully vegan")   return "100% vegan";
-    if (s==="vegetarian")    return "fully vegetarian";
-    if (s==="seriously spicy") return "seriously spicy — they actually mean it";
-    if (s.includes("protein")) return `${s} in the main dish`;
-    if (s==="health-focused") return "health-focused kitchen";
-    if (s==="great comfort food") return "known for comfort food";
-    if (s==="great for groups") return "great for group orders";
-    if (s==="open late") return "still delivering right now";
+    if (s.includes("€") && s.includes("avg")) return `avg price €${r.avgPrice} fits your budget`;
+    if (s.includes("min"))   return `delivers in ${r.deliveryTime} min`;
+    if (s==="fully vegan")   return "100% vegan menu";
+    if (s==="vegetarian")    return "fully vegetarian kitchen";
+    if (s==="seriously spicy") return SPICY_LINES[r.id % SPICY_LINES.length](r);
+    if (s.includes("protein")) return PROTEIN_LINES[r.id % PROTEIN_LINES.length](r);
+    if (s==="health-focused") return `health-focused kitchen — rated ${r.rating}/5`;
+    if (s==="great comfort food") return `known for ${r.cuisine}-style comfort food`;
+    if (s==="great for groups") return `great for group orders — ${r.deliveryTime} min`;
+    if (s==="open late") return `still delivering right now — ${r.deliveryTime} min`;
     return s;
   };
+ 
+  // If spicy is the main reason, return the full spicy line directly
+  if (reasons.includes("seriously spicy") && reasons.length === 1) {
+    return SPICY_LINES[r.id % SPICY_LINES.length](r);
+  }
+  if (reasons.includes("seriously spicy") && reasons.length > 1) {
+    const others = reasons.filter(s => s !== "seriously spicy").map(h);
+    const spicyLine = `Known for real heat (${r.cuisine})`;
+    const cap = s => s.charAt(0).toUpperCase()+s.slice(1);
+    return `${spicyLine}, ${others.join(", ")}.`;
+  }
+ 
   const parts = reasons.map(h);
   const cap   = s => s.charAt(0).toUpperCase()+s.slice(1);
-  if (parts.length===1) return `${cap(parts[0])} — rated ${r.rating}/5.`;
-  if (parts.length===2) return `${cap(parts[0])} and ${parts[1]}.`;
+  if (parts.length===1) return `${cap(parts[0])}.`;
+  if (parts.length===2) return `${cap(parts[0])}, and ${parts[1]}.`;
   const last = parts.pop();
   return `${parts.map((p,i)=>i===0?cap(p):p).join(", ")}, and ${last}.`;
 }
-
+ 
+// ─────────────────────────────────────────────
+// COMPONENTS
+// ─────────────────────────────────────────────
 function Card({r, rank, reasons}) {
   const [hov,setHov]=useState(false);
   return (
@@ -190,7 +228,7 @@ function Card({r, rank, reasons}) {
     </div>
   );
 }
-
+ 
 function MBar({label,value,color,desc,inverse=false}) {
   const c = inverse?(value>10?"#f87171":"#4ade80"):color;
   return (
@@ -206,7 +244,7 @@ function MBar({label,value,color,desc,inverse=false}) {
     </div>
   );
 }
-
+ 
 function Typing({label="Thinking…"}) {
   return (
     <div style={{display:"flex",gap:"10px",alignItems:"center"}}>
@@ -222,14 +260,28 @@ function Typing({label="Thinking…"}) {
     </div>
   );
 }
-
+ 
 function AgentBubble({text, cards, isClosing}) {
   return (
     <div style={{display:"flex",gap:"10px",alignItems:"flex-start"}}>
       <div style={{width:"32px",height:"32px",borderRadius:"50%",background:"#18181b",border:"1px solid #27272a",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"15px",flexShrink:0,marginTop:"2px"}}>🍽️</div>
       <div style={{flex:1}}>
-        <div style={{background:isClosing?"transparent":"#18181b",border:isClosing?"none":"1px solid #27272a",borderRadius:"4px 18px 18px 18px",padding:isClosing?"2px 0":"11px 15px",display:"inline-block",maxWidth:"88%",marginBottom:cards?"10px":"0"}}>
-          <p style={{margin:0,fontSize:isClosing?"12px":"14px",color:isClosing?"#71717a":"#e4e4e7",lineHeight:1.6,fontStyle:isClosing?"italic":"normal"}}>{text}</p>
+        <div style={{
+          background: isClosing ? "#18181b" : "#18181b",
+          border: isClosing ? "1px dashed #3f3f46" : "1px solid #27272a",
+          borderRadius:"4px 18px 18px 18px",
+          padding:"11px 15px",
+          display:"inline-block",
+          maxWidth:"88%",
+          marginBottom:cards?"10px":"0"
+        }}>
+          <p style={{
+            margin:0,
+            fontSize:"13px",
+            color: isClosing ? "#a1a1aa" : "#e4e4e7",
+            lineHeight:1.6,
+            fontStyle: isClosing ? "italic" : "normal"
+          }}>{text}</p>
         </div>
         {cards&&(
           <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
@@ -240,7 +292,10 @@ function AgentBubble({text, cards, isClosing}) {
     </div>
   );
 }
-
+ 
+// ─────────────────────────────────────────────
+// MAIN
+// ─────────────────────────────────────────────
 export default function AgenticDiscovery() {
   const [messages, setMessages]       = useState([{role:"agent",id:0,text:"Hey! What are you in the mood for tonight? 🍕\n\nTell me anything — what you're craving, how you're feeling, your budget. I'll take it from there.",type:"greeting"}]);
   const [input, setInput]             = useState("");
@@ -251,7 +306,7 @@ export default function AgenticDiscovery() {
   const [loadingLabel, setLoadingLabel]   = useState("Thinking…");
   const [queryCount, setQC]           = useState(0);
   const endRef = useRef(null);
-
+ 
   const CHIPS = [
     "I have no idea what I want 😅",
     "Something spicy please 🌶️",
@@ -260,62 +315,70 @@ export default function AgenticDiscovery() {
     "Dinner for the whole family",
     "It's late and I'm starving",
   ];
-
+ 
   useEffect(()=>{ endRef.current?.scrollIntoView({behavior:"smooth"}); },[messages,loading]);
-
+ 
   const push = (msg) => setMessages(prev=>[...prev,msg]);
-
+ 
   const handleQuery = async (query) => {
     if (!query.trim()||loading) return;
     setInput("");
     setLoading(true);
     setParserOutput(null);
     push({role:"user",text:query,id:Date.now()});
-
+ 
     try {
+      // ── STEP 1: Real Claude API → NLU + human reaction + intro ──
       setLoadingLabel("Understanding what you mean…");
       const parsed = await callClaudeParser(query);
       const constraints = parsed.constraints || {};
-
+ 
+      // ── STEP 2: Show AI-generated reaction immediately ──
       push({role:"agent",id:Date.now()+1,text:parsed.reaction||"Let me check what's good 😊",type:"reaction"});
-
+ 
+      // ── STEP 3: Local scoring (deterministic, fast) ──
       setLoadingLabel("Ranking restaurants…");
       const scored = RESTAURANTS
         .map(r=>({r,...scoreRestaurant(r,constraints)}))
         .sort((a,b)=>b.score-a.score);
       const top3 = scored.slice(0,3);
-
+ 
       await sleep(350);
-
+ 
+      // ── STEP 4: Show AI-generated intro + ranked cards ──
       push({role:"agent",id:Date.now()+2,text:parsed.intro||"Here's what I'd go with:",cards:top3,type:"results"});
-
+ 
+      // ── STEP 5: Real Claude API → personalised closing ──
       setLoadingLabel("Adding my personal take…");
       const closing = await callClaudeClosing(top3[0]?.r, constraints, query);
-
+ 
       await sleep(250);
-
+ 
+      // ── STEP 6: Show closing ──
       push({role:"agent",id:Date.now()+3,text:closing,type:"closing"});
-
+ 
+      // ── STEP 7: Update eval panel ──
       const m = calcMetrics(parsed.intents||[], constraints, top3[0]?.r);
       setParsedIntents(parsed.intents||[]);
       setMetrics(m);
       setParserOutput(parsed);
       setQC(c=>c+1);
-
+ 
     } catch(err) {
       console.error(err);
-      push({role:"agent",id:Date.now()+99,text:"Something went wrong — want to try again? 😅",type:"error"});
+      push({role:"agent",id:Date.now()+99,text:"Something went wrong on my end — want to try again? 😅",type:"error"});
     }
-
+ 
     setLoading(false);
   };
-
+ 
   const sc  = metrics ? metrics.overall>=80?"#4ade80":metrics.overall>=60?"#f59e0b":"#f87171" : "#f59e0b";
   const sbg = metrics ? metrics.overall>=80?"#0a2e18":metrics.overall>=60?"#1c1004":"#1c0606" : "#1c1c1e";
-
+ 
   return (
     <div style={{height:"100vh",background:"#09090b",color:"white",display:"flex",flexDirection:"column",fontFamily:"'Inter',system-ui,sans-serif",overflow:"hidden"}}>
-
+ 
+      {/* HEADER */}
       <header style={{borderBottom:"1px solid #18181b",padding:"11px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
         <div>
           <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
@@ -339,9 +402,11 @@ export default function AgenticDiscovery() {
           )}
         </div>
       </header>
-
+ 
+      {/* BODY */}
       <div style={{flex:1,display:"flex",gap:"10px",padding:"12px",overflow:"hidden"}}>
-
+ 
+        {/* CHAT */}
         <div style={{flex:1,display:"flex",flexDirection:"column",background:"#111113",borderRadius:"14px",border:"1px solid #18181b",overflow:"hidden",minWidth:0}}>
           <div style={{flex:1,overflowY:"auto",padding:"24px 20px",display:"flex",flexDirection:"column",gap:"14px"}}>
             {messages.map(msg=>(
@@ -360,7 +425,8 @@ export default function AgenticDiscovery() {
             {loading&&<Typing label={loadingLabel}/>}
             <div ref={endRef}/>
           </div>
-
+ 
+          {/* Input */}
           <div style={{borderTop:"1px solid #18181b",padding:"13px 16px",flexShrink:0}}>
             <div style={{display:"flex",flexWrap:"wrap",gap:"6px",marginBottom:"10px"}}>
               {CHIPS.map(q=>(
@@ -386,14 +452,16 @@ export default function AgenticDiscovery() {
             </div>
           </div>
         </div>
-
+ 
+        {/* EVAL PANEL */}
         <div style={{width:"284px",flexShrink:0,background:"#111113",borderRadius:"14px",border:"1px solid #18181b",padding:"18px",overflowY:"auto",display:"flex",flexDirection:"column",gap:"16px"}}>
-
+ 
           <div>
             <h2 style={{margin:"0 0 2px 0",fontSize:"11px",fontWeight:700,color:"#f59e0b",textTransform:"uppercase",letterSpacing:"1px"}}>🔬 AI Eval Panel</h2>
             <p style={{margin:0,fontSize:"10px",color:"#3f3f46"}}>PM monitoring layer · hidden from users</p>
           </div>
-
+ 
+          {/* AI Architecture badge */}
           <div style={{background:"#0f0f23",border:"1px solid #3730a3",borderRadius:"10px",padding:"10px 12px"}}>
             <p style={{margin:"0 0 6px 0",fontSize:"10px",color:"#818cf8",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px"}}>⚡ AI Architecture</p>
             <div style={{display:"flex",flexDirection:"column",gap:"5px"}}>
@@ -410,12 +478,7 @@ export default function AgenticDiscovery() {
               ))}
             </div>
           </div>
-
-          <div style={{background:"#0a0a0c",border:"1px solid #27272a",borderRadius:"10px",padding:"10px 12px"}}>
-            <p style={{margin:"0 0 4px 0",fontSize:"10px",color:"#6b7280",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px"}}>📊 Eval Transparency</p>
-            <p style={{margin:0,fontSize:"10px",color:"#3f3f46",lineHeight:1.6}}>Scores are heuristic proxies, not production evals. A real system would use labelled query sets + offline A/B testing.</p>
-          </div>
-
+ 
           {!metrics?(
             <div>
               <p style={{fontSize:"12px",color:"#3f3f46",lineHeight:1.7,marginBottom:"14px"}}>
@@ -435,6 +498,7 @@ export default function AgenticDiscovery() {
             </div>
           ):(
             <>
+              {/* Score */}
               <div style={{background:sbg,border:`1px solid ${sc}44`,borderRadius:"12px",padding:"16px",textAlign:"center"}}>
                 <div style={{fontSize:"44px",fontWeight:800,color:sc,lineHeight:1,marginBottom:"4px"}}>{metrics.overall}%</div>
                 <div style={{fontSize:"11px",color:"#6b7280",marginBottom:"6px"}}>Overall Agent Score</div>
@@ -442,14 +506,16 @@ export default function AgenticDiscovery() {
                   {metrics.overall>=80?"✅ Production ready":metrics.overall>=60?"⚠️ Needs tuning":"❌ Below threshold"}
                 </div>
               </div>
-
+ 
+              {/* Metrics */}
               <div>
                 <MBar label="🎯 Intent Match Rate"      value={metrics.intentMatch} color="#f59e0b"                                 desc="% of user intents extracted by Claude API"/>
                 <MBar label="✅ Constraint Satisfaction" value={metrics.conSat}      color={metrics.conSat>=75?"#4ade80":"#f59e0b"} desc="% of stated constraints met by top result"/>
                 <MBar label="📍 Groundedness Score"     value={metrics.ground}      color="#4ade80"                                 desc="Results verified against restaurant dataset"/>
                 <MBar label="🌀 Hallucination Rate"     value={metrics.halluc}      color={metrics.halluc<=5?"#4ade80":"#f87171"} inverse desc="% fabricated output — lower is better"/>
               </div>
-
+ 
+              {/* What Claude extracted */}
               {parsedIntents.length>0&&(
                 <div>
                   <p style={{fontSize:"10px",color:"#52525b",margin:"0 0 8px 0",textTransform:"uppercase",letterSpacing:".5px"}}>
@@ -462,7 +528,8 @@ export default function AgenticDiscovery() {
                   ))}
                 </div>
               )}
-
+ 
+              {/* Active constraints */}
               {parserOutput?.constraints&&(
                 <div>
                   <p style={{fontSize:"10px",color:"#52525b",margin:"0 0 8px 0",textTransform:"uppercase",letterSpacing:".5px"}}>Parsed Constraints</p>
@@ -482,12 +549,14 @@ export default function AgenticDiscovery() {
                   </div>
                 </div>
               )}
-
+ 
+              {/* Guardrail */}
               <div style={{background:"#0a0a0c",border:"1px solid #27272a",borderRadius:"10px",padding:"12px"}}>
                 <p style={{margin:"0 0 5px 0",fontSize:"10px",color:"#6b7280",fontWeight:700,textTransform:"uppercase",letterSpacing:".5px"}}>🛡️ Guardrail Status</p>
                 <p style={{margin:0,fontSize:"10px",color:"#3f3f46",lineHeight:1.6}}>Dietary mismatches penalised in scoring. All venues verified in dataset. No hallucinated restaurants detected.</p>
               </div>
-
+ 
+              {/* Formula */}
               <div style={{background:"#0a0a0c",border:"1px solid #18181b",borderRadius:"10px",padding:"12px"}}>
                 <p style={{margin:"0 0 6px 0",fontSize:"10px",color:"#3f3f46",textTransform:"uppercase",letterSpacing:".5px"}}>Score Formula</p>
                 <pre style={{margin:0,fontSize:"10px",color:"#6b7280",fontFamily:"monospace",lineHeight:1.8}}>
@@ -501,7 +570,7 @@ export default function AgenticDiscovery() {
           )}
         </div>
       </div>
-
+ 
       <style>{`
         @keyframes tdot{0%,100%{transform:translateY(0);opacity:.4}50%{transform:translateY(-6px);opacity:1}}
         *{box-sizing:border-box}
@@ -513,3 +582,24 @@ export default function AgenticDiscovery() {
     </div>
   );
 }
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
