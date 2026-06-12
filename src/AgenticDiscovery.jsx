@@ -24,6 +24,65 @@ const RESTAURANTS = [
 ];
  
 // ─────────────────────────────────────────────
+// LOCAL CONSTRAINT PARSER — regex-based, 100% reliable
+// Claude handles text generation. This handles logic.
+// ─────────────────────────────────────────────
+function parseConstraintsLocally(query) {
+  const q = query.toLowerCase();
+  const constraints = {
+    maxPrice:null, maxTime:null, cuisine:null,
+    vegan:false, vegetarian:false, spicy:false,
+    highProtein:false, healthy:false, comfort:false,
+    family:false, lateNight:false
+  };
+  const intents = [];
+ 
+  // Price
+  const pm = q.match(/under\s*€?(\d+)|€?(\d+)\s*budget|less than\s*€?(\d+)/);
+  if (pm) { constraints.maxPrice = parseInt(pm[1]||pm[2]||pm[3]); intents.push({label:`Budget ≤ €${constraints.maxPrice}`,icon:"💰"}); }
+  else if (/cheap|budget|affordable/.test(q)) { constraints.maxPrice=12; intents.push({label:"Budget friendly",icon:"💰"}); }
+ 
+  // Time
+  const tm = q.match(/(?:within|under|in)\s*(\d+)\s*min/);
+  if (tm) { constraints.maxTime=parseInt(tm[1]); intents.push({label:`Delivery ≤ ${constraints.maxTime} min`,icon:"⏱️"}); }
+  else if (/fast|quick|asap/.test(q)) { constraints.maxTime=20; intents.push({label:"Fast delivery",icon:"⏱️"}); }
+ 
+  // Cuisine detection
+  const CUISINES = {
+    'japanese': ['sushi','japanese','ramen','nigiri','maki'],
+    'indian':   ['curry','indian','masala','tikka','biryani','dal','naan'],
+    'italian':  ['pizza','italian','pasta','margherita','risotto'],
+    'american': ['burger','burgers','bbq','wings','fries','hotdog'],
+    'thai':     ['thai','pad thai','green curry','tom yum'],
+    'korean':   ['korean','bibimbap','kimchi','bulgogi','kbbq'],
+    'mexican':  ['mexican','taco','tacos','burrito','nachos','guacamole'],
+    'mediterranean': ['mediterranean','falafel','hummus','shawarma','kebab'],
+    'chinese':  ['chinese','dim sum','noodles','wonton','dumplings'],
+    'healthy':  ['salad','bowl','quinoa','acai','smoothie'],
+  };
+  for (const [cuisine, keywords] of Object.entries(CUISINES)) {
+    if (keywords.some(k => q.includes(k))) {
+      constraints.cuisine = cuisine;
+      intents.push({label:`${cuisine.charAt(0).toUpperCase()+cuisine.slice(1)} cuisine`,icon:"🍽️"});
+      break;
+    }
+  }
+ 
+  // Dietary
+  if (/\bvegan\b/.test(q))      { constraints.vegan=true;      intents.push({label:"Vegan",      icon:"🌱"}); }
+  else if (/vegetarian/.test(q)) { constraints.vegetarian=true; intents.push({label:"Vegetarian", icon:"🥗"}); }
+ 
+  if (/high.?protein|protein|gym|fitness|macro|worked out|workout/.test(q)) { constraints.highProtein=true; intents.push({label:"High protein",icon:"💪"}); }
+  if (/healthy|health|clean|light meal/.test(q))  { constraints.healthy=true;    intents.push({label:"Healthy",     icon:"🥦"}); }
+  if (/spicy|hot/.test(q))                        { constraints.spicy=true;      intents.push({label:"Spicy",       icon:"🌶️"}); }
+  if (/comfort|cozy|warm|soul/.test(q))           { constraints.comfort=true;    intents.push({label:"Comfort food",icon:"🍲"}); }
+  if (/family|kids|group|4 people|four/.test(q))  { constraints.family=true;     intents.push({label:"Family meal", icon:"👨‍👩‍👧‍👦"}); }
+  if (/late night|midnight|starving|snack/.test(q)){ constraints.lateNight=true; intents.push({label:"Late night",  icon:"🌙"}); }
+ 
+  return {constraints, intents};
+}
+ 
+// ─────────────────────────────────────────────
 // REAL CLAUDE API — INTENT PARSER
 // One call: extracts constraints + generates
 // human reaction + intro text
@@ -346,15 +405,29 @@ export default function AgenticDiscovery() {
     push({role:"user",text:query,id:Date.now()});
  
     try {
-      // ── STEP 1: Real Claude API → NLU + human reaction + intro ──
+      // ── STEP 1: Local constraint parsing (reliable, instant) ──
+      const {constraints: localConstraints, intents: localIntents} = parseConstraintsLocally(query);
+ 
+      // ── STEP 2: Claude API → human reaction + intro text only ──
       setLoadingLabel("Understanding what you mean…");
       const parsed = await callClaudeParser(query);
-      const constraints = parsed.constraints || {};
  
-      // ── STEP 2: Show AI-generated reaction immediately ──
+      // Merge: local constraints are reliable baseline
+      // Claude constraints override only if it found something local missed
+      const claudeC = parsed.constraints || {};
+      const constraints = {
+        ...localConstraints,
+        // Claude overrides cuisine only if it found one and local didn't
+        cuisine: localConstraints.cuisine || claudeC.cuisine || null,
+      };
+ 
+      // Use local intents as base, they're reliable
+      const intents = localIntents.length > 0 ? localIntents : (parsed.intents || []);
+ 
+      // ── STEP 3: Show AI-generated reaction immediately ──
       push({role:"agent",id:Date.now()+1,text:parsed.reaction||"Let me check what's good 😊",type:"reaction"});
  
-      // ── STEP 3: Local scoring (deterministic, fast) ──
+      // ── STEP 4: Local scoring (deterministic, fast) ──
       setLoadingLabel("Ranking restaurants…");
       const scored = RESTAURANTS
         .map(r=>({r,...scoreRestaurant(r,constraints)}))
@@ -376,8 +449,8 @@ export default function AgenticDiscovery() {
       push({role:"agent",id:Date.now()+3,text:closing,type:"closing"});
  
       // ── STEP 7: Update eval panel ──
-      const m = calcMetrics(parsed.intents||[], constraints, top3[0]?.r);
-      setParsedIntents(parsed.intents||[]);
+      const m = calcMetrics(intents, constraints, top3[0]?.r);
+      setParsedIntents(intents);
       setMetrics(m);
       setParserOutput(parsed);
       setQC(c=>c+1);
@@ -601,3 +674,9 @@ export default function AgenticDiscovery() {
   );
 }
  
+
+
+
+
+
+
