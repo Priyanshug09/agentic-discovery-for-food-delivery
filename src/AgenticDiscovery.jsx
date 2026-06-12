@@ -32,7 +32,7 @@ async function callClaudeParser(query) {
       "anthropic-dangerous-direct-browser-access": "true",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 600,
       system: `You are a food discovery assistant for a delivery platform.
 Extract intent from the user's message and generate human conversation text.
@@ -95,7 +95,7 @@ async function callClaudeClosing(winner, constraints, query) {
       "anthropic-dangerous-direct-browser-access": "true",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 120,
       system: `Write a casual 1-2 sentence personal closing recommendation. Sound like a knowledgeable friend. Be specific about WHY this restaurant fits. 1 emoji max. Return ONLY the message text — no quotes, no preamble.`,
       messages: [{
