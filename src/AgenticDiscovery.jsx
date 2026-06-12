@@ -45,6 +45,7 @@ Return ONLY a valid JSON object. No markdown. No backticks. No explanation.
   "constraints": {
     "maxPrice": null,
     "maxTime": null,
+    "cuisine": null,
     "vegan": false,
     "vegetarian": false,
     "spicy": false,
@@ -58,7 +59,8 @@ Return ONLY a valid JSON object. No markdown. No backticks. No explanation.
   "intro": "1 natural sentence introducing the restaurant results. No jargon. Keep it conversational."
 }
  
-Icon guide: 💰 budget, ⏱️ speed, 🌱 vegan, 🥗 vegetarian, 💪 protein/gym, 🥦 healthy, 🌶️ spicy, 🍲 comfort, 👨‍👩‍👧‍👦 family, 🌙 late night
+Icon guide: 💰 budget, ⏱️ speed, 🌱 vegan, 🥗 vegetarian, 💪 protein/gym, 🥦 healthy, 🌶️ spicy, 🍲 comfort, 👨‍👩‍👧‍👦 family, 🌙 late night, 🍽️ cuisine type
+cuisine: extract cuisine type as lowercase string if mentioned (e.g. "sushi", "pizza", "indian", "thai", "burger") or null if not mentioned.
 maxPrice and maxTime must be numbers or null. All booleans must be true or false.`,
       messages: [{ role: "user", content: query }]
     })
@@ -119,12 +121,25 @@ function scoreRestaurant(r, c) {
   const total = Object.keys(c).filter(k => c[k] !== null && c[k] !== false).length || 1;
   const reasons = [];
  
-  if (c.maxPrice  != null) { if (r.avgPrice<=c.maxPrice)        {score+=35;constraintsMet++;reasons.push(`€${r.avgPrice} avg`);}       else score-=45;}
-  if (c.maxTime   != null) { if (r.deliveryTime<=c.maxTime)     {score+=30;constraintsMet++;reasons.push(`${r.deliveryTime} min`);}      else score-=40;}
-  if (c.vegan)             { if (r.vegan)                        {score+=50;constraintsMet++;reasons.push("fully vegan");}               else score-=65;}
-  else if(c.vegetarian)    { if (r.vegetarian)                   {score+=38;constraintsMet++;reasons.push("vegetarian");}                else score-=55;}
-  if (c.spicy)             { if (r.spicy)                        {score+=35;constraintsMet++;reasons.push("seriously spicy");}           else score-=22;}
-  if (c.highProtein)       { if (r.topItem.protein>=35)          {score+=42;constraintsMet++;reasons.push(`${r.topItem.protein}g protein`);} else if(r.topItem.protein>=20) score+=12;}
+  // Cuisine match — strong signal
+  if (c.cuisine) {
+    const cu = c.cuisine.toLowerCase();
+    const nameMatch = r.name.toLowerCase().includes(cu);
+    const cuisineMatch = r.cuisine.toLowerCase().includes(cu);
+    const tagMatch = r.tags.some(t => t.includes(cu));
+    if (nameMatch || cuisineMatch || tagMatch) { score+=60; constraintsMet++; reasons.push(`${r.cuisine} cuisine`); }
+    else score-=55;
+  }
+  // Price — hard constraint, heavy penalty if violated
+  if (c.maxPrice != null) {
+    if (r.avgPrice<=c.maxPrice)     {score+=35;constraintsMet++;reasons.push(`€${r.avgPrice} avg`);}
+    else score -= (r.avgPrice - c.maxPrice) * 4; // scaled penalty
+  }
+  if (c.maxTime   != null) { if (r.deliveryTime<=c.maxTime)  {score+=30;constraintsMet++;reasons.push(`${r.deliveryTime} min`);}  else score-=40;}
+  if (c.vegan)             { if (r.vegan)                     {score+=50;constraintsMet++;reasons.push("fully vegan");}            else score-=65;}
+  else if(c.vegetarian)    { if (r.vegetarian)                {score+=38;constraintsMet++;reasons.push("vegetarian");}             else score-=55;}
+  if (c.spicy)             { if (r.spicy)                     {score+=35;constraintsMet++;reasons.push("seriously spicy");}        else score-=22;}
+  if (c.highProtein)       { if (r.topItem.protein>=35)       {score+=42;constraintsMet++;reasons.push(`${r.topItem.protein}g protein`);} else if(r.topItem.protein>=20) score+=12;}
   if (c.healthy   && r.tags.includes("healthy"))    {score+=28;constraintsMet++;reasons.push("health-focused");}
   if (c.comfort   && r.tags.includes("comfort"))    {score+=25;constraintsMet++;reasons.push("great comfort food");}
   if (c.family    && r.tags.includes("family"))     {score+=35;constraintsMet++;reasons.push("great for groups");}
@@ -585,4 +600,4 @@ export default function AgenticDiscovery() {
     </div>
   );
 }
-
+ 
